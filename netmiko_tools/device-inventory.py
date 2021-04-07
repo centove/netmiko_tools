@@ -4,8 +4,6 @@ from __future__ import print_function, unicode_literals
 
 import tldextract
 import yaml
-from MikoConnection import ssh_manager
-from pprint import pprint
 import ipaddress
 import argparse
 import os, sys, socket
