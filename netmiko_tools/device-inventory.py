@@ -95,16 +95,18 @@ def detect_device(device, a_device):
 
 def get_group_devices(group, args):
   ''' return a list of devices in a group '''
+  print ("Devices in group {}".format(group))
   devices = {}
   try:
     device_group = device_inventory[group]
     if isinstance(device_group, list):
       for dev in device_group:
+        print (dev)
         devices[dev] = device_inventory[dev]
         devices[dev]['username'] = args.username if args.username else devices[dev]['username']
-        devices[dev]['password'] = args.password if args.password else devices[dev]['password']
-  except KeyError:
-    return None
+        devices[dev]['password'] = args.password if args.password else None
+  except KeyError as e:
+    print ("Key Error {}".format(e))
   return devices  
 
 def parse_arguments(args):
