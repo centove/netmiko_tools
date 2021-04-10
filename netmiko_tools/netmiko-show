@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Return output from single show cmd using Netmiko."""
 from __future__ import print_function
 from __future__ import unicode_literals
@@ -22,32 +22,10 @@ from netmiko.utilities import obtain_netmiko_filename, write_tmp_file, ensure_di
 from netmiko.utilities import find_netmiko_dir
 from netmiko.utilities import SHOW_RUN_MAPPER
 
-GREP = '/bin/grep'
-if not os.path.exists(GREP):
-    GREP = '/usr/bin/grep'
+
 NETMIKO_BASE_DIR = '~/.netmiko'
 ERROR_PATTERN = "%%%failed%%%"
 __version__ = '0.1.0'
-
-
-def grepx(files, pattern, grep_options, use_colors=True):
-    """Call system grep"""
-    if not isinstance(files, (list, tuple)):
-        files = [files]
-    if use_colors:
-        grep_options += ['--color=auto']
-
-    # Make grep output look nicer by 'cd netmiko_full_dir'
-    _, netmiko_full_dir = find_netmiko_dir()
-    os.chdir(netmiko_full_dir)
-    # Convert files to strip off the directory
-    retrieve_file = lambda x: x.split('/')[-1]  # noqa
-    files = [retrieve_file(a_file) for a_file in files]
-    files.sort()
-    grep_list = [GREP] + grep_options + [pattern] + files
-    proc = subprocess.Popen(grep_list, shell=False)
-    proc.communicate()
-    return ''
 
 
 def ssh_conn(device_name, a_device, cli_command, output_q):
@@ -174,8 +152,6 @@ def main(args):
             else:
                 failed_devices.append(device_name)
 
-    grep_options = []
-    grepx(my_files, pattern, grep_options)
     if cli_args.display_runtime:
         print("Total time: {0}".format(datetime.now() - start_time))
 
