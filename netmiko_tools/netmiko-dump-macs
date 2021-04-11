@@ -10,10 +10,6 @@ import subprocess
 import threading
 import re
 from pprint import pprint
-try:
-    from Queue import Queue
-except ImportError:
-    from queue import Queue
 from datetime import datetime
 from getpass import getpass
 import concurrent.futures
@@ -23,14 +19,13 @@ from netmiko.utilities import load_devices, display_inventory
 from netmiko.utilities import obtain_all_devices
 from netmiko.utilities import obtain_netmiko_filename, write_tmp_file, ensure_dir_exists
 from netmiko.utilities import find_netmiko_dir, get_template_dir
-from netmiko.utilities import SHOW_RUN_MAPPER
 from netmiko.ssh_exception import NetMikoTimeoutException
 from paramiko.ssh_exception import SSHException
 from netmiko.ssh_exception import AuthenticationException
 from netaddr import EUI, mac_unix_expanded
 
+# use the development version of ntc-templates 
 template_dir = os.path.expanduser("~/ntc-templates/lib")
-print ("Templates in %s" % template_dir)
 if os.path.exists(template_dir):
     pprint (template_dir)
     sys.path.append(template_dir)
@@ -66,8 +61,6 @@ def ssh_conn(device_name, a_device, output_q):
         ports = net_connect.send_command_expect('show interfaces status', use_textfsm=True)
         net_connect.disconnect()
         output = { device_name: { 'ports': ports, 'macs': macs}}
-    output_q.put({device_name: output})
-
     return output
 
 # As the routers are inconsistant in how they return port names we have to normalize it
@@ -88,6 +81,7 @@ def build_port_map(device, data):
         key = get_port_key(port['port'])
         port_map[key] = port
     return port_map
+
 # Display the access port mac addresses
 # Don't care about any of the trunk ports or other system type ports
 def display_macs(device, data):
@@ -114,7 +108,7 @@ def display_macs(device, data):
 
 def parse_arguments(args):
     """Parse command-line arguments."""
-    description = "Return output from single show cmd using Netmiko (defaults to running-config)"
+    description = "Display the mac address table of the access ports of a given device or group with netmiko"
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("devices", nargs='?', help="Device or group to connect to",
                         action="store", type=str)
@@ -155,7 +149,6 @@ def main(args):
     use_cached_files = cli_args.use_cache
     hide_failed = cli_args.hide_failed
 
-    output_q = Queue()
     my_devices = load_devices()
     if device_or_group == 'all':
         device_group = obtain_all_devices(my_devices)
@@ -199,19 +192,6 @@ def main(args):
                 else:
                     port_map = build_port_map(device, data[device])
                     display_macs(device, data[device])
-
-    else:
-        for device_name in device_group:
-            file_name = obtain_netmiko_filename(device_name)
-            try:
-                with open(file_name) as f:
-                    output = f.read()
-            except IOError:
-                return("Some cache files are missing: unable to use --use-cache option.")
-            if ERROR_PATTERN not in output:
-                my_files.append(file_name)
-            else:
-                failed_devices.append(device_name)
 
     if cli_args.display_runtime:
         print("Total time: {0}".format(datetime.now() - start_time))
