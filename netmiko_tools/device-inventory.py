@@ -12,6 +12,7 @@ import subprocess
 import threading
 
 from getpass import getpass
+import concurrent.futures
 
 from netmiko import SSHDetect, Netmiko
 from paramiko.ssh_exception import SSHException 
@@ -80,7 +81,6 @@ def get_devices_from_file(device_file, args):
 
 def detect_device(device, a_device):
   ''' Use the ssh deivce type detection to see what kind of device this is '''
-  print ("Attempting to detect device type {} {}".format(a_device['host'], a_device['ip']))
   try:
     guesser = SSHDetect(**a_device)
     best = guesser.autodetect()
@@ -104,6 +104,7 @@ def get_group_devices(group, args):
         print (dev)
         devices[dev] = device_inventory[dev]
         devices[dev]['username'] = args.username if args.username else devices[dev]['username']
+        ''' We don't store the password so the key will not be there. '''
         devices[dev]['password'] = args.password if args.password else None
   except KeyError as e:
     print ("Key Error {}".format(e))
@@ -156,11 +157,19 @@ def main(args):
     device_list = get_devices_from_file(cli_args.device_file, cli_args)
 
     print ("Processing device list")
-    for device, a_device in device_list.items():
-      a_device['username'] = cli_username
-      a_device['password'] = cli_password
-      a_device['conn_timeout'] = cli_args.connection_timeout
-      detect_device(device, a_device)
+    future_device = dict()
+    with concurrent.futures.ThreadPoolExecutor(max_workers = 6) as executor:
+      for device_name, a_device in device_list.items():
+        print ("Detecting %s" % (device_name))
+        a_device['username'] = cli_username
+        a_device['password'] = cli_password
+        a_device['conn_timeout'] = cli_args.connection_timeout
+        thread = executor.submit(detect_device,device_name, a_device)
+        future_device[thread] = device_name
+      for future in concurrent.futures.as_completed(future_device):
+          device = future_device[future]
+          print ("%s done" % (device))
+
     for device, a_device in device_list.items():
       a_device.pop('password', None)
       if cli_args.add_group:
