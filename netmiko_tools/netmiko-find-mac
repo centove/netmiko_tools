@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Search a list of devices looking for a mac address or a list of mac addresses"""
+from __future__ import print_function
+from __future__ import unicode_literals
+
+import argparse
+import sys
+import os
+import subprocess
+import threading
+import re
+from pprint import pprint
+from datetime import datetime
+from getpass import getpass
+import concurrent.futures
+
+from netmiko import ConnectHandler
+from netmiko.utilities import load_devices, display_inventory
+from netmiko.utilities import obtain_all_devices
+from netmiko.utilities import obtain_netmiko_filename, write_tmp_file, ensure_dir_exists
+from netmiko.utilities import find_netmiko_dir, get_template_dir
+from netmiko.ssh_exception import NetMikoTimeoutException
+from paramiko.ssh_exception import SSHException
+from netmiko.ssh_exception import AuthenticationException
+from netaddr import EUI, mac_unix_expanded
+
+# use the development version of ntc-templates 
+template_dir = os.path.expanduser("~/ntc-templates/lib")
+if os.path.exists(template_dir):
+    sys.path.append(template_dir)
+
+from ntc_templates.parse import parse_output
+
+NETMIKO_BASE_DIR = '~/.netmiko'
+ERROR_PATTERN = "%%%failed%%%"
+__version__ = '0.1.0'
+
+def ssh_conn(device_name, a_device):
+    try:
+        net_connect = ConnectHandler(**a_device)
+    except (AuthenticationException):
+        output = "{} Authentication failure: {}".format(ERROR_PATTERN, device_name)
+    except (NetMikoTimeoutException):
+        output = "{} Timeout to device: {}".format(ERROR_PATTERN, device_name)
+    except (EOFError):
+        output = "{} End of file while attempting device {}".format(ERROR_PATTERN, device_name)
+    except (SSHException):
+        output = "{} SSH issue, is ssh enabled? {}".format(ERROR_PATTERN, device_name)
+    except Exception:
+        output = ERROR_PATTERN
+    else:
+        try:
+            macs = net_connect.send_command('show mac address-table', use_textfsm=True)
+            ports = net_connect.send_command('show interfaces status', use_textfsm=True)
+            # Get the neighbors of this device.
+            if a_device['device_type'] == 'cisco_ios':
+                cdp_neigh = net_connect.send_command('show cdp neighbors', use_textfsm=True)
+            else:
+                cdp_neigh = {}
+            if isinstance (cdp_neigh, str):
+                cdp_neigh = {}
+            lldp_neigh = net_connect.send_command('show lldp neighbors detail', use_textfsm=True)
+            net_connect.disconnect()
+            if 'Invalid input' in lldp_neigh:
+                lldp_neigh = {}
+            port_map = build_port_map(ports)
+            cdp_neigh = build_neighbor_map(cdp_neigh)
+            lldp_neigh = build_neighbor_map(lldp_neigh)
+            neighbors = {**cdp_neigh, **lldp_neigh}
+            output = { device_name: { 'ports': port_map, 'macs': macs, 'cdp_neigh': cdp_neigh, 'lldp_neigh': lldp_neigh, 'neighbors': neighbors }}
+        except (EOFError):
+            output = "{} End of file while attempting device {}".format(ERROR_PATTERN, device_name)
+    return output
+# Cisco
+# Capability Codes: R - Router, T - Trans Bridge, B - Source Route Bridge
+#                  S - Switch, H - Host, I - IGMP, r - Repeater, P - Phone, 
+#                  D - Remote, C - CVTA, M - Two-port Mac Relay 
+# LLDP Capability codes.
+# B - Bridge (Switch)
+# C - DOCSIS Cable Device
+# O - Other
+# P - Repeater
+# R - Router
+# S - Station
+# T - Telephone
+# W - WLAN Access Point
+
+
+# Normalize the port name returned from the device.
+def get_port_key(port):
+    pat = re.compile('(^\w{2})\D+(\d+/\d+/\d+|\d+/\d+|\d+)|(^\w{2})(\d+/\d+|\d+)', re.IGNORECASE)
+    elements = pat.findall(str(port))
+    # no matches on the regex
+    if not elements:
+        return port[-1]
+    key = [''.join(e) for e in elements]
+    return key[-1]
+
+# Build a port mapping from the returned dictonary with a key of the normalized port name.
+def build_port_map(ports):
+    port_map = dict()
+    for port in ports:
+        key = port['port']
+        try:
+            exists = port_map[key]
+            print ("Exists {}".format(port_map[key]))
+        except KeyError:
+            key = get_port_key(key)
+            port_map[key] = port
+    return port_map
+
+# Similar to the port map, we build a dict keyed on the local port for ease of lookup.
+def build_neighbor_map(neighbors):
+    if not neighbors:
+        return {}
+    neighbor_map = dict()
+    for neighbor in neighbors:
+        try:
+            key = neighbor['local_interface'].replace(" ","")
+        except KeyError as Ke:
+            key = neighbor['local_port']
+        if key == '':
+            continue
+        key = get_port_key(key)
+        neighbor_map[key] = neighbor
+    return neighbor_map
+
+def find_mac (device, data, macs):
+    print ("Device {}".format(device))
+    found = list()
+    try:
+        device_macs = data[device]['macs']
+    except KeyError as ke:
+        print ("no macs on {}?".format(device))
+    for search_mac in macs:
+        for dev_mac in device_macs:
+            try:
+                address = EUI(dev_mac['destination_address'])
+            except KeyError:
+                address = EUI(dev_mac['mac_address'])
+            address.dialect = mac_unix_expanded
+            if str(address) == search_mac:
+                if isinstance (dev_mac['destination_port'], list):
+                    mac_port = dev_mac['destination_port']
+                else:
+                    mac_port = dev_mac['destination_port']
+                mac_port = get_port_key(mac_port)
+                device_ports = data[device]['ports']
+                neighbors = data[device]['neighbors']
+                if device_ports[mac_port]['vlan'] == 'trunk':
+                    print ("MAC seen on trunk port {}".format(mac_port))
+                    continue
+                try:
+                    neighbor = neighbors[mac_port]
+                except KeyError as ke:
+                    neighbor = None
+                if neighbor:
+                    capability = neighbor['capability']
+                    if "B" or "S" or "R" in capability:
+                        continue
+                        print ("MAC address was seen on switch {}".format(neighbor['neighbor']))
+                    else:
+
+                        print ("MAC address terminates on this device")
+
+                found.append({'device': device, 'address': address, 'port': mac_port})
+                #print ("{} {} {}".format(device, address, mac_port))
+    return found
+
+def get_device_list(devices):
+    """Build a list of devices from the devices argument """
+    device_inventory = load_devices()
+    device_list = dict()
+    for device in devices:
+        try:
+            dev = device_inventory[device]
+            if isinstance (dev, list):
+                for tmp_dev in dev:
+                    print ("Will search device {}".format(tmp_dev))
+                    device_list[tmp_dev] = device_inventory[tmp_dev]
+            else:
+                print ("Will search device {}".format(device))
+                device_list[device] = dev
+        except KeyError as ke:
+            print ("Error reading device inventory, {0} not found".format(device))
+    return device_list
+
+def get_mac_list(macs):
+    mac_list = []
+    for mac in macs:
+        mac = mac.strip()
+        mac_list.append(mac.lower())
+    return mac_list
+
+def read_mac_file(mac_file):
+    mac_list = []
+    with open (mac_file, newline='\n') as macs:
+        for mac in macs:
+            mac = mac.rstrip()
+            if mac == '':
+                continue
+            mac_list.append(mac.replace(" ", "").lower())
+    return mac_list
+
+
+
+def parse_arguments(args):
+    """Parse command-line arguments."""
+    description = "Go through a list of devices and MAC addresses and show where the MAC addresses are"
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("devices", nargs='+', help="Device or group to connect to", action="store", type=str)
+    parser.add_argument("--username", help="Username", action="store", type=str)
+    parser.add_argument("--secret", help="Enable Secret", action="store_true")
+    parser.add_argument("--list-devices", help="List devices from inventory", action="store_true")
+    parser.add_argument("--display-runtime", help="Display program runtime", action="store_true")
+    parser.add_argument("--version", help="Display version", action="store_true")
+    parser.add_argument("--mac", help="MAC address(es) to find", action="append", dest='macs')
+    parser.add_argument("--mac-file", help="A file with the list of MAC addresses to find, one per line.", dest="mac_file")
+
+    cli_args = parser.parse_args(args)
+    if not cli_args.list_devices and not cli_args.version:
+        if not cli_args.devices:
+            parser.error('Devices not specified.')
+    return cli_args
+
+def main(args):
+    start_time = datetime.now()
+    cli_args = parse_arguments(args)
+    cli_username = cli_args.username if cli_args.username else None
+    cli_secret = getpass("Enable secret: ") if cli_args.secret else None
+
+    version = cli_args.version
+    if version:
+        print("netmiko-find-macs v{}".format(__version__))
+        return 0
+    list_devices = cli_args.list_devices
+    if list_devices:
+        my_devices = load_devices()
+        display_inventory(my_devices)
+        return 0
+    cli_password = getpass()
+    device_list = get_device_list(cli_args.devices)
+    if cli_args.macs: 
+        mac_list = get_mac_list(cli_args.macs)
+    if cli_args.mac_file:
+        mac_list = read_mac_file(cli_args.mac_file)
+
+    future_device = dict()
+    found = list()
+    with concurrent.futures.ThreadPoolExecutor(max_workers = 6) as excecutor:
+        for device_name, a_device in device_list.items():
+            print ("Searching {}".format(device_name))
+            if cli_username:
+                a_device['username'] = cli_username 
+            a_device['password'] = cli_password
+            if cli_secret:
+                a_device['secret'] = cli_secret
+            thread = excecutor.submit(ssh_conn, device_name, a_device)
+            future_device[thread] = device_name
+        for mac in mac_list:
+            print ("Searching for {} ".format(mac))
+        for future in concurrent.futures.as_completed(future_device):
+            device = future_device[future]
+            try:
+                data = future.result()
+            except Exception as exc:
+                print ("{} generated an exception: {}".format(device, exc))
+            else:
+                results = find_mac(device, data, mac_list)
+                for result in results:
+                    found.append(result)
+    pprint (found)
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
