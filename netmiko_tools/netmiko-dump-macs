@@ -27,7 +27,6 @@ from netaddr import EUI, mac_unix_expanded
 # use the development version of ntc-templates 
 template_dir = os.path.expanduser("~/ntc-templates/lib")
 if os.path.exists(template_dir):
-    pprint (template_dir)
     sys.path.append(template_dir)
 
 from ntc_templates.parse import parse_output
@@ -40,11 +39,9 @@ __version__ = '0.1.0'
 # Cisco (^\w{2})\D+(\d+/\d+/\d+|\d+/\d+|\d+)
 # Final (^\w{2})\D+(\d+/\d+/\d+|\d+/\d+|\d+)|(^\w{2})(\d+/\d+|\d+)
 
-def ssh_conn(device_name, a_device, output_q):
+def ssh_conn(device_name, a_device):
     try:
         net_connect = ConnectHandler(**a_device)
-        net_connect.enable()
-
     except (AuthenticationException):
         output = "{} Authentication failure: {}".format(ERROR_PATTERN, device_name)
     except (NetMikoTimeoutException):
@@ -56,11 +53,13 @@ def ssh_conn(device_name, a_device, output_q):
     except Exception:
         output = ERROR_PATTERN
     else:
-
-        macs = net_connect.send_command_expect('show mac address-table', use_textfsm=True)
-        ports = net_connect.send_command_expect('show interfaces status', use_textfsm=True)
-        net_connect.disconnect()
-        output = { device_name: { 'ports': ports, 'macs': macs}}
+        try:
+            macs = net_connect.send_command_expect('show mac address-table', use_textfsm=True)
+            ports = net_connect.send_command_expect('show interfaces status', use_textfsm=True)
+            net_connect.disconnect()
+            output = { device_name: { 'ports': ports, 'macs': macs}}
+        except (EOFError):
+            output = "{} End of file while attempting device {}".format(ERROR_PATTERN, device_name)
     return output
 
 # As the routers are inconsistant in how they return port names we have to normalize it
@@ -131,7 +130,6 @@ def main(args):
     cli_args = parse_arguments(args)
 
     cli_username = cli_args.username if cli_args.username else None
-    cli_password = getpass() 
     cli_secret = getpass("Enable secret: ") if cli_args.secret else None
 
     version = cli_args.version
@@ -144,12 +142,14 @@ def main(args):
         display_inventory(my_devices)
         return 0
 
+    cli_password = getpass() 
     device_or_group = cli_args.devices.strip()
     pattern = r"."
     use_cached_files = cli_args.use_cache
     hide_failed = cli_args.hide_failed
 
     my_devices = load_devices()
+    pprint (cli_args)
     if device_or_group == 'all':
         device_group = obtain_all_devices(my_devices)
     else:
@@ -176,12 +176,11 @@ def main(args):
                 a_device['password'] = cli_password
             if cli_secret:
                 a_device['secret'] = cli_secret
-            cli_command = SHOW_RUN_MAPPER.get(a_device['device_type'], 'show mac address-table')
         future_device = dict()
         with concurrent.futures.ThreadPoolExecutor(max_workers = 6) as executor:
             for device_name, a_device in device_group.items():
                 print ("Get mac address table from %s" % (device_name))
-                thread = executor.submit(ssh_conn,device_name, a_device, output_q)
+                thread = executor.submit(ssh_conn,device_name, a_device)
                 future_device[thread] = device_name
             for future in concurrent.futures.as_completed(future_device):
                 device = future_device[future]
