@@ -25,7 +25,7 @@ from netmiko.ssh_exception import AuthenticationException
 from netaddr import EUI, mac_unix_expanded
 
 # use the development version of ntc-templates 
-template_dir = os.path.expanduser("~/ntc-templates/lib")
+template_dir = os.path.expanduser("~/ntc-templates")
 if os.path.exists(template_dir):
     sys.path.append(template_dir)
 
@@ -147,9 +147,6 @@ def find_mac (device, data, macs):
                 mac_port = get_port_key(mac_port)
                 device_ports = data[device]['ports']
                 neighbors = data[device]['neighbors']
-                if device_ports[mac_port]['vlan'] == 'trunk':
-                    print ("MAC seen on trunk port {}".format(mac_port))
-                    continue
                 try:
                     neighbor = neighbors[mac_port]
                 except KeyError as ke:
@@ -160,10 +157,10 @@ def find_mac (device, data, macs):
                         continue
                         print ("MAC address was seen on switch {}".format(neighbor['neighbor']))
                     else:
-
                         print ("MAC address terminates on this device")
-
-                found.append({'device': device, 'address': address, 'port': mac_port})
+                if device_ports[mac_port]['vlan'] == 'trunk':
+                    continue
+                found.append({'device': device, 'address': address, 'port': mac_port, 'name': device_ports[mac_port]['name']})
                 #print ("{} {} {}".format(device, address, mac_port))
     return found
 
@@ -189,17 +186,25 @@ def get_mac_list(macs):
     mac_list = []
     for mac in macs:
         mac = mac.strip()
-        mac_list.append(mac.lower())
+        parsed = EUI(mac)
+        parsed.dialect = mac_unix_expanded
+        mac = str(parsed)
+        mac_list.append(mac)
     return mac_list
 
+# read a file of MAC addresses to look for, the mac addresses can be in any format that netaddr understands.
 def read_mac_file(mac_file):
     mac_list = []
     with open (mac_file, newline='\n') as macs:
         for mac in macs:
             mac = mac.rstrip()
+            mac = mac.replace(" ", '')
             if mac == '':
                 continue
-            mac_list.append(mac.replace(" ", "").lower())
+            parsed = EUI(mac)
+            parsed.dialect = mac_unix_expanded
+            mac = str(parsed)
+            mac_list.append(mac)
     return mac_list
 
 
